@@ -82,6 +82,9 @@
     .landing .eyebrow{color:#9fb1d0;text-transform:uppercase;letter-spacing:.14em;font-size:11px;margin-bottom:8px}
     .landing .list{display:grid;gap:8px;margin-top:8px}
 
+    /* Ensure landing hides when combined with .hidden */
+    .landing.hidden{display:none !important}
+
     @keyframes floaty{0%{transform:translateY(0)}50%{transform:translateY(-6px)}100%{transform:translateY(0)}}
     .landing .mock{animation:floaty 6s ease-in-out infinite}
 
@@ -318,6 +321,28 @@
 
       // Helpers
       function cellIndex(r,c){ return r*COLS + c; }
+      
+      // Difficulty and shapes
+      const DIFFICULTIES = {
+        easy:   { sizesMobile:[17,19,21], sizesDesktop:[21,23], loopProb:0.03 },
+        normal: { sizesMobile:[21,23],    sizesDesktop:[23,25], loopProb:0.06 },
+        hard:   { sizesMobile:[23,25],    sizesDesktop:[25,27], loopProb:0.11 }
+      };
+      const SHAPES = ['rectangle','ring','cross','diagonal','islands'];
+      let currentDifficulty = 'normal';
+      let currentShape = 'rectangle';
+      let loopProbability = 0.06;
+      function isMobile(){ return window.innerWidth <= 900; }
+      function pickRandom(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+      function randomizeMazeParameters(){
+        currentDifficulty = isMobile() ? 'normal' : 'hard';
+        const conf = DIFFICULTIES[currentDifficulty];
+        const sizes = isMobile() ? conf.sizesMobile : conf.sizesDesktop;
+        const size = pickRandom(sizes);
+        ROWS = COLS = size;
+        loopProbability = conf.loopProb;
+        currentShape = pickRandom(SHAPES);
+      }
 
       function initSizes(){
         // Fit canvas to available space (CSS) and scale internal pixels for crispness
@@ -342,8 +367,59 @@
         grid = Array.from({length:ROWS}, (_,r)=>Array.from({length:COLS}, (_,c)=>({
           r,c,
           walls:[true,true,true,true], // top,right,bottom,left
-          visited:false
+          visited:false,
+          blocked:false
         })));
+      }
+
+      function applyShapeMaskToGrid(shape){
+        const centerR = (ROWS-1)/2;
+        const centerC = (COLS-1)/2;
+        const dist = (a,b)=>Math.abs(a-b);
+        if(shape==='rectangle') return;
+        if(shape==='ring'){
+          const r0 = Math.floor(ROWS*0.33), r1 = Math.ceil(ROWS*0.67);
+          const c0 = Math.floor(COLS*0.33), c1 = Math.ceil(COLS*0.67);
+          for(let r=1;r<ROWS-1;r++){
+            for(let c=1;c<COLS-1;c++){
+              if(r>r0 && r<r1 && c>c0 && c<c1){ grid[r][c].blocked=true; grid[r][c].walls=[true,true,true,true]; }
+            }
+          }
+        }
+        if(shape==='cross'){
+          const arm = Math.max(2, Math.floor(Math.min(ROWS,COLS)*0.12));
+          for(let r=0;r<ROWS;r++){
+            for(let c=0;c<COLS;c++){
+              const inVert = dist(c, centerC) <= arm;
+              const inHorz = dist(r, centerR) <= arm;
+              if(!(inVert || inHorz)){
+                grid[r][c].blocked=true; grid[r][c].walls=[true,true,true,true];
+              }
+            }
+          }
+        }
+        if(shape==='diagonal'){
+          const k = Math.floor(Math.min(ROWS,COLS)*0.18);
+          for(let r=0;r<ROWS;r++){
+            for(let c=0;c<COLS;c++){
+              if(dist(r,c) <= k) continue;
+              grid[r][c].blocked=true; grid[r][c].walls=[true,true,true,true];
+            }
+          }
+        }
+        if(shape==='islands'){
+          const islands = isMobile()? 4 : 6;
+          for(let n=0;n<islands;n++){
+            const cr = 2 + Math.floor(Math.random()*(ROWS-4));
+            const cc = 2 + Math.floor(Math.random()*(COLS-4));
+            for(let dr=-1; dr<=1; dr++){
+              for(let dc=-1; dc<=1; dc++){
+                const r = cr+dr, c = cc+dc;
+                if(r>0&&c>0&&r<ROWS&&c<COLS){ grid[r][c].blocked=true; grid[r][c].walls=[true,true,true,true]; }
+              }
+            }
+          }
+        }
       }
 
       function neighbors(r,c){
@@ -351,7 +427,10 @@
         const out = [];
         for(const [dr,dc,dir] of dirs){
           const nr=r+dr, nc=c+dc;
-          if(nr>0 && nr<ROWS && nc>0 && nc<COLS) out.push({r:nr,c:nc,dir});
+          const mr=(r+nr)/2|0, mc=(c+nc)/2|0;
+          if(nr>0 && nr<ROWS && nc>0 && nc<COLS){
+            if(!grid[nr][nc].blocked && !grid[mr][mc].blocked){ out.push({r:nr,c:nc,dir}); }
+          }
         }
         return out;
       }
@@ -376,13 +455,15 @@
         if(dc===-1) cellA.walls[3]=false; // left
       }
 
-      // Generate maze using randomized DFS (recursive backtracker) on an odd-cell grid
+      // Generate maze using randomized DFS (recursive backtracker) with shape masks and loops
       function generateMaze(){
+        randomizeMazeParameters();
         initSizes();
         makeGrid();
-        // prepare barrier grid: make every even coordinate a wall cell; carve passages on odd coords
-        // We'll perform DFS starting at start
+        applyShapeMaskToGrid(currentShape);
         for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) grid[r][c].visited=false;
+
+        start = findStartCell();
 
         const stack = [];
         const s = grid[start.r][start.c];
@@ -396,7 +477,6 @@
             stack.pop();
           } else {
             const nxt = nbrs[Math.floor(Math.random()*nbrs.length)];
-            // carve through the middle cell
             carveBetween(current, grid[nxt.r][nxt.c]);
             grid[nxt.r][nxt.c].visited = true;
             stack.push(grid[nxt.r][nxt.c]);
@@ -419,9 +499,9 @@
           }
         }
 
-        // Recompute finish to be bottom-right passage cell
-        finish = { r: ROWS-2, c: COLS-2 };
+        addLoops(loopProbability);
         player = { r:start.r, c:start.c, steps:0 };
+        finish = findFarthestFinishFrom(start);
 
         // Compute shortest path with BFS
         shortestPath = computeShortestPath();
@@ -430,8 +510,75 @@
         draw();
       }
 
+      function findStartCell(){
+        for(let r=1;r<ROWS-1;r+=2){
+          for(let c=1;c<COLS-1;c+=2){
+            if(!grid[r][c].blocked){ return {r,c}; }
+          }
+        }
+        return {r:1,c:1};
+      }
+
+      function addLoops(prob){
+        for(let r=1;r<ROWS-1;r++){
+          for(let c=1;c<COLS-1;c++){
+            if(grid[r][c].blocked) continue;
+            const pairs = [[0,1],[1,0]]; // right and down
+            for(const [dr,dc] of pairs){
+              const nr=r+dr, nc=c+dc;
+              if(nr<=0||nc<=0||nr>=ROWS||nc>=COLS) continue;
+              if(grid[nr][nc].blocked) continue;
+              if(Math.random() < prob){
+                removeWall({r,c}, {r:nr,c:nc});
+                removeWall({r:nr,c:nc}, {r,c});
+              }
+            }
+          }
+        }
+      }
+
+      function findFarthestFinishFrom(src){
+        const {dist, visited} = computeDistances(src);
+        let best = {r:src.r, c:src.c};
+        let bestD = -1;
+        for(let r=0;r<ROWS;r++){
+          for(let c=0;c<COLS;c++){
+            if(!visited[r][c]) continue;
+            if(grid[r][c].blocked) continue;
+            const d = dist[r][c];
+            if(d>bestD){ bestD=d; best={r,c}; }
+          }
+        }
+        return best;
+      }
+
+      function computeDistances(src){
+        const visited = Array.from({length:ROWS}, ()=>Array(COLS).fill(false));
+        const dist = Array.from({length:ROWS}, ()=>Array(COLS).fill(Infinity));
+        const q=[];
+        q.push(src);
+        visited[src.r][src.c]=true;
+        dist[src.r][src.c]=0;
+        while(q.length){
+          const cur = q.shift();
+          const dirs = [[-1,0],[0,1],[1,0],[0,-1]];
+          for(const [dr,dc] of dirs){
+            const nr=cur.r+dr, nc=cur.c+dc;
+            if(nr<0||nc<0||nr>=ROWS||nc>=COLS) continue;
+            if(grid[nr][nc].blocked) continue;
+            if(visited[nr][nc]) continue;
+            const wallBetween = isWallBetween(cur.r,cur.c,nr,nc);
+            if(wallBetween) continue;
+            visited[nr][nc]=true;
+            dist[nr][nc]=dist[cur.r][cur.c]+1;
+            q.push({r:nr,c:nc});
+          }
+        }
+        return {dist, visited};
+      }
+
       function computeShortestPath(){
-        // BFS on grid allowing moves between adjacent passage cells (not cross walls)
+        // Standard BFS building prev to reconstruct path
         const visited = Array.from({length:ROWS}, ()=>Array(COLS).fill(false));
         const prev = Array.from({length:ROWS}, ()=>Array(COLS).fill(null));
         const q=[];
@@ -444,8 +591,8 @@
           for(const [dr,dc] of dirs){
             const nr=cur.r+dr, nc=cur.c+dc;
             if(nr<0||nc<0||nr>=ROWS||nc>=COLS) continue;
+            if(grid[nr][nc].blocked) continue;
             if(visited[nr][nc]) continue;
-            // check if passage between cur and neighbor exists (no wall on cur toward that neighbor)
             const wallBetween = isWallBetween(cur.r,cur.c,nr,nc);
             if(wallBetween) continue;
             visited[nr][nc]=true;
@@ -454,7 +601,6 @@
           }
         }
         if(!visited[finish.r][finish.c]) return null;
-        // reconstruct path
         const path=[];
         let cur = finish;
         while(cur){ path.push(cur); cur = prev[cur.r][cur.c]; }
@@ -490,11 +636,16 @@
             const x=c*cellSize, y=r*cellSize;
             const cell = grid[r][c];
             // draw floor for passage-like cells (heuristic)
-            // we'll consider a cell 'passage' if any wall missing
-            const isPassage = cell.walls.some(w=>!w);
-            if(isPassage){
-              ctx.fillStyle = '#071a2b';
+            // blocked cells darker
+            if(cell.blocked){
+              ctx.fillStyle = '#060b13';
               ctx.fillRect(x,y,cellSize,cellSize);
+            } else {
+              const isPassage = cell.walls.some(w=>!w);
+              if(isPassage){
+                ctx.fillStyle = '#071a2b';
+                ctx.fillRect(x,y,cellSize,cellSize);
+              }
             }
             ctx.strokeStyle = 'rgba(230,238,248,0.95)';
             // draw walls
@@ -658,13 +809,8 @@
 
       // UI buttons
       replayBtn.addEventListener('click', ()=>{
-        // regenerate maze
+        // regenerate maze with randomized parameters, shapes and loops
         resetTimer(); bonusEl.textContent='—'; movesEl.textContent='0'; shortestEl.textContent='—';
-        // randomize size a bit for variety
-        const sizes = [21,23,25,27];
-        const pick = sizes[Math.floor(Math.random()*sizes.length)];
-        ROWS = COLS = pick;
-        start = {r:1,c:1};
         generateMaze();
       });
 
